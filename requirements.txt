@@ -1,0 +1,6 @@
+gradio>=5.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+soundfile>=0.12.1
+torch>=2.1.0
+kokoro>=0.9.4
