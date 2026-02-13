@@ -23,6 +23,8 @@ DEFAULT_LANG_CODE = "a"
 DEFAULT_MAX_CONCURRENCY = 4
 STORAGE_DRIVE = "Google Drive"
 STORAGE_MEMORY = "In-Memory Download"
+OPERATION_BATCH = "Batch (CSV)"
+OPERATION_TEST = "Custom Test (No CSV)"
 
 
 @dataclass
@@ -167,6 +169,10 @@ def create_zip_from_audio_pairs(
             archive.writestr(f"{row_result.phone}.wav", wav_bytes.getvalue())
 
     return temp_zip_path
+
+
+def empty_results_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=["index", "name", "phone", "status", "message", "output_path"])
 
 
 def validate_and_prepare_rows(df: pd.DataFrame, template: str) -> tuple[list[RowTask], list[RowResult]]:
@@ -315,8 +321,7 @@ def generate_from_csv(
     max_concurrency: int,
 ) -> tuple[pd.DataFrame, str, str | None]:
     if not csv_file_path:
-        empty_df = pd.DataFrame(columns=["index", "name", "phone", "status", "message", "output_path"])
-        return empty_df, "Please upload a CSV file.", None
+        return empty_results_df(), "Please upload a CSV file.", None
 
     generator = get_generator()
     preflight = generator.preflight()
@@ -436,22 +441,71 @@ def generate_single_test(
             status = f"{mount_msg}\nSaved to: {output_path}"
             return (generator.sample_rate, audio), str(output_path), status
 
-        temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-        temp_wav_path = temp_wav.name
-        temp_wav.close()
-        generator.save_wav(audio, Path(temp_wav_path))
-        status = "Generated in memory mode. Download WAV from UI output."
-        return (generator.sample_rate, audio), temp_wav_path, status
+        temp_dir = Path(tempfile.mkdtemp(prefix="kokoro_test_"))
+        temp_wav_path = temp_dir / f"{clean_phone}.wav"
+        generator.save_wav(audio, temp_wav_path)
+        status = f"Generated in memory mode. Download WAV from UI output: {temp_wav_path.name}"
+        return (generator.sample_rate, audio), str(temp_wav_path), status
     except Exception as exc:
         return None, None, f"Failed to generate single test audio: {exc}"
+
+
+def generate_voice_notes(
+    operation_mode: str,
+    csv_file_path: str,
+    test_name: str,
+    test_phone: str,
+    template_text: str,
+    storage_mode: str,
+    drive_output_dir: str,
+    max_concurrency: int,
+) -> tuple[pd.DataFrame, str, str | None, tuple[int, np.ndarray] | None, str | None, str]:
+    if operation_mode == OPERATION_TEST:
+        test_audio, test_file_path, test_status = generate_single_test(
+            name=test_name,
+            phone=test_phone,
+            template_text=template_text,
+            storage_mode=storage_mode,
+            drive_output_dir=drive_output_dir,
+        )
+        result_status = "success" if test_audio is not None else "failed"
+        result_message = "Generated" if test_audio is not None else test_status
+        result_output = f"{(test_phone or '').strip()}.wav" if test_audio is not None else ""
+        result_df = pd.DataFrame(
+            [
+                {
+                    "index": 0,
+                    "name": (test_name or "").strip(),
+                    "phone": (test_phone or "").strip(),
+                    "status": result_status,
+                    "message": result_message,
+                    "output_path": result_output,
+                }
+            ]
+        )
+        summary = (
+            "Custom Test mode\n"
+            f"Storage mode: {storage_mode}\n"
+            f"Status: {test_status}"
+        )
+        return result_df, summary, None, test_audio, test_file_path, test_status
+
+    batch_df, batch_summary, batch_zip = generate_from_csv(
+        csv_file_path=csv_file_path,
+        template_text=template_text,
+        storage_mode=storage_mode,
+        drive_output_dir=drive_output_dir,
+        max_concurrency=max_concurrency,
+    )
+    return batch_df, batch_summary, batch_zip, None, None, ""
 
 
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="Kokoro 82M Voice Notes") as demo:
         gr.Markdown("## Kokoro 82M Voice Notes Generator")
         gr.Markdown(
-            "Upload a CSV with columns **Name** and **No** or run a direct single test without CSV. "
-            "Use `{{Name}}` in message template. Choose Google Drive storage or in-memory download mode."
+            "Use one flow for both modes: select Batch (CSV) or Custom Test (No CSV). "
+            "Use `{{Name}}` in message template. Files are generated using `No.wav`."
         )
 
         with gr.Row():
@@ -459,7 +513,16 @@ def build_ui() -> gr.Blocks:
             health_status = gr.Textbox(label="Model Health", lines=4)
 
         with gr.Row():
-            csv_file = gr.File(label="CSV File", file_types=[".csv"], type="filepath")
+            operation_mode = gr.Radio(
+                label="Operation Mode",
+                choices=[OPERATION_BATCH, OPERATION_TEST],
+                value=OPERATION_BATCH,
+            )
+            csv_file = gr.File(label="CSV File (Batch Mode)", file_types=[".csv"], type="filepath")
+            test_name = gr.Textbox(label="Test Name (Custom Test)", value="Test User")
+            test_phone = gr.Textbox(label="Test No (Custom Test)", value="0000000000")
+
+        with gr.Row():
             storage_mode = gr.Radio(
                 label="Storage Mode",
                 choices=[STORAGE_DRIVE, STORAGE_MEMORY],
@@ -494,15 +557,9 @@ def build_ui() -> gr.Blocks:
             wrap=True,
         )
         summary_text = gr.Textbox(label="Run Summary", lines=5)
-
-        gr.Markdown("### Single Test (No CSV)")
-        with gr.Row():
-            single_name = gr.Textbox(label="Test Name", value="Test User")
-            single_phone = gr.Textbox(label="Test No", value="0000000000")
-        single_run_button = gr.Button("Generate Single Test Voice", variant="secondary")
-        single_audio = gr.Audio(label="Single Test Audio", type="numpy")
-        single_file = gr.File(label="Single Test Download")
-        single_status = gr.Textbox(label="Single Test Status", lines=4)
+        single_audio = gr.Audio(label="Custom Test Audio", type="numpy")
+        single_file = gr.File(label="Custom Test Download (No.wav)")
+        single_status = gr.Textbox(label="Custom Test Status", lines=3)
 
         health_button.click(
             fn=check_model_health,
@@ -512,17 +569,10 @@ def build_ui() -> gr.Blocks:
         )
 
         run_button.click(
-            fn=generate_from_csv,
-            inputs=[csv_file, template_text, storage_mode, output_dir, max_concurrency],
-            outputs=[result_table, summary_text, csv_download_zip],
+            fn=generate_voice_notes,
+            inputs=[operation_mode, csv_file, test_name, test_phone, template_text, storage_mode, output_dir, max_concurrency],
+            outputs=[result_table, summary_text, csv_download_zip, single_audio, single_file, single_status],
             api_name="generate_voice_notes",
-        )
-
-        single_run_button.click(
-            fn=generate_single_test,
-            inputs=[single_name, single_phone, template_text, storage_mode, output_dir],
-            outputs=[single_audio, single_file, single_status],
-            api_name="generate_single_test_voice",
         )
 
     return demo

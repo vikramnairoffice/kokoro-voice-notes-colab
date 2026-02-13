@@ -21,7 +21,7 @@ Sara,9876543210
 - Uses `{{Name}}` tag in message template.
 - Includes a model health check button in UI to verify Kokoro is installed and generating audio.
 - Generates one WAV file per row.
-- Output filename is the exact value in `No` plus `.wav`.
+- Output filename is the exact value in `No` plus `.wav` (batch and custom test).
 - Supports two storage modes:
    - Google Drive output folder
    - In-memory download (ZIP for batch, WAV for single test)
@@ -49,14 +49,18 @@ Gradio will print a local URL in Colab output.
 ## How to use
 
 1. Click **Check Kokoro Model** to confirm model is installed and working.
-2. Write message template with `{{Name}}`, for example:
+2. Select operation mode:
+   - **Batch (CSV)**
+   - **Custom Test (No CSV)**
+3. Write message template with `{{Name}}`, for example:
    - `Hello {{Name}}, this is a reminder call from our team.`
-3. Choose storage mode:
+4. Choose storage mode:
    - **Google Drive** for direct saving to drive folder
    - **In-Memory Download** for UI download files
-4. For batch run: upload CSV and click **Generate Voice Notes**.
-5. For no-CSV test: use **Single Test** fields and click **Generate Single Test Voice**.
-6. Check run summary and per-row result table.
+5. For batch run: upload CSV file.
+6. For custom test: fill test `Name` and `No` fields.
+7. Click **Generate Voice Notes**.
+8. Check run summary and per-row result table.
 
 ## Notes
 
