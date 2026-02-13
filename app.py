@@ -79,6 +79,42 @@ class KokoroVoiceGenerator:
 
         self._pipeline = KPipeline(lang_code=self.lang_code)
 
+    def _extract_audio_candidate(self, item: Any) -> Any:
+        if isinstance(item, tuple) and len(item) >= 3:
+            return item[2]
+        if isinstance(item, dict):
+            if "audio" in item:
+                return item["audio"]
+            if "wav" in item:
+                return item["wav"]
+        if hasattr(item, "audio"):
+            return getattr(item, "audio")
+        return item
+
+    def _flatten_audio_arrays(self, value: Any) -> list[np.ndarray]:
+        if value is None:
+            return []
+
+        if isinstance(value, torch.Tensor):
+            array = value.detach().float().cpu().numpy().reshape(-1)
+            return [array] if array.size > 0 else []
+
+        if isinstance(value, np.ndarray):
+            array = value.astype(np.float32, copy=False).reshape(-1)
+            return [array] if array.size > 0 else []
+
+        if isinstance(value, (list, tuple)):
+            arrays: list[np.ndarray] = []
+            for part in value:
+                arrays.extend(self._flatten_audio_arrays(part))
+            return arrays
+
+        try:
+            array = np.asarray(value, dtype=np.float32).reshape(-1)
+            return [array] if array.size > 0 else []
+        except Exception:
+            return []
+
     def synthesize_numpy(self, text: str) -> np.ndarray:
         self.ensure_pipeline()
         assert self._pipeline is not None
@@ -87,20 +123,10 @@ class KokoroVoiceGenerator:
 
         segments: list[np.ndarray] = []
         for item in generated:
-            audio = None
-            if isinstance(item, tuple) and len(item) >= 3:
-                audio = item[2]
-            elif isinstance(item, dict) and "audio" in item:
-                audio = item["audio"]
-            else:
-                audio = item
-
-            if audio is None:
-                continue
-
-            array = np.asarray(audio, dtype=np.float32).reshape(-1)
-            if array.size > 0:
-                segments.append(array)
+            audio_candidate = self._extract_audio_candidate(item)
+            arrays = self._flatten_audio_arrays(audio_candidate)
+            if arrays:
+                segments.extend(arrays)
 
         if not segments:
             raise RuntimeError("No audio generated for input text")
