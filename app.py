@@ -543,7 +543,13 @@ def build_ui() -> gr.Blocks:
 
         with gr.Group():
             with gr.Row():
-                csv_file = gr.File(label="CSV File (Batch Mode)", file_types=[".csv"], type="filepath", scale=2)
+                csv_file = gr.File(
+                    label="CSV File (Batch Mode)",
+                    file_types=[".csv"],
+                    type="filepath",
+                    scale=2,
+                    height=110,
+                )
                 test_name = gr.Textbox(label="Test Name (Custom Test)", value="Test User", scale=1)
                 test_phone = gr.Textbox(label="Test No (Custom Test)", value="0000000000", scale=1)
 
