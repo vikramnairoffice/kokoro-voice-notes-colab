@@ -518,9 +518,8 @@ def build_ui() -> gr.Blocks:
             "Use `{{Name}}` in message template. Files are generated using `No.wav`."
         )
 
-        with gr.Row():
-            health_button = gr.Button("Check Kokoro Model", variant="secondary", scale=1)
-            health_status = gr.Textbox(label="Model Health", lines=4, scale=2)
+        health_button = gr.Button("Check Kokoro Model", variant="secondary")
+        health_status = gr.Textbox(label="Model Health", lines=4)
 
         with gr.Row():
             operation_mode = gr.Radio(
