@@ -459,7 +459,7 @@ def generate_voice_notes(
     storage_mode: str,
     drive_output_dir: str,
     max_concurrency: int,
-) -> tuple[pd.DataFrame, str, str | None, tuple[int, np.ndarray] | None, str | None]:
+) -> tuple[pd.DataFrame, str, str | None, tuple[int, np.ndarray] | None]:
     if operation_mode == OPERATION_TEST:
         test_audio, test_file_path, test_status = generate_single_test(
             name=test_name,
@@ -488,7 +488,7 @@ def generate_voice_notes(
             f"Storage mode: {storage_mode}\n"
             f"Status: {test_status}"
         )
-        return result_df, summary, None, test_audio, test_file_path
+        return result_df, summary, test_file_path, test_audio
 
     batch_df, batch_summary, batch_zip = generate_from_csv(
         csv_file_path=csv_file_path,
@@ -497,7 +497,7 @@ def generate_voice_notes(
         drive_output_dir=drive_output_dir,
         max_concurrency=max_concurrency,
     )
-    return batch_df, batch_summary, batch_zip, None, None
+    return batch_df, batch_summary, batch_zip, None
 
 
 def update_operation_visibility(operation_mode: str) -> tuple[dict[str, bool], dict[str, bool], dict[str, bool], dict[str, bool]]:
@@ -568,7 +568,7 @@ def build_ui() -> gr.Blocks:
             summary_text = gr.Textbox(label="Run / Test Summary", lines=5)
             with gr.Row():
                 single_audio = gr.Audio(label="Custom Test Audio", type="numpy")
-                single_file = gr.File(label="Custom Test Download (No.wav)")
+                download_file = gr.File(label="Download Output (Batch ZIP or Test WAV)")
 
         with gr.Accordion("Generation Results (Batch)", open=False):
             result_table = gr.Dataframe(
@@ -576,7 +576,6 @@ def build_ui() -> gr.Blocks:
                 headers=["index", "name", "phone", "status", "message", "output_path"],
                 wrap=True,
             )
-            csv_download_zip = gr.File(label="Batch Download ZIP (In-Memory Mode)")
 
         health_button.click(
             fn=check_model_health,
@@ -588,7 +587,7 @@ def build_ui() -> gr.Blocks:
         run_button.click(
             fn=generate_voice_notes,
             inputs=[operation_mode, csv_file, test_name, test_phone, template_text, storage_mode, output_dir, max_concurrency],
-            outputs=[result_table, summary_text, csv_download_zip, single_audio, single_file],
+            outputs=[result_table, summary_text, download_file, single_audio],
             api_name="generate_voice_notes",
         )
 
