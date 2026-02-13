@@ -318,4 +318,4 @@ def build_ui() -> gr.Blocks:
 if __name__ == "__main__":
     app = build_ui()
     app.queue(default_concurrency_limit=1)
-    app.launch(share=False)
+    app.launch(share=True)
