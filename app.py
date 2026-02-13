@@ -459,7 +459,7 @@ def generate_voice_notes(
     storage_mode: str,
     drive_output_dir: str,
     max_concurrency: int,
-) -> tuple[pd.DataFrame, str, str | None, tuple[int, np.ndarray] | None, str | None, str]:
+) -> tuple[pd.DataFrame, str, str | None, tuple[int, np.ndarray] | None, str | None]:
     if operation_mode == OPERATION_TEST:
         test_audio, test_file_path, test_status = generate_single_test(
             name=test_name,
@@ -488,7 +488,7 @@ def generate_voice_notes(
             f"Storage mode: {storage_mode}\n"
             f"Status: {test_status}"
         )
-        return result_df, summary, None, test_audio, test_file_path, test_status
+        return result_df, summary, None, test_audio, test_file_path
 
     batch_df, batch_summary, batch_zip = generate_from_csv(
         csv_file_path=csv_file_path,
@@ -497,7 +497,17 @@ def generate_voice_notes(
         drive_output_dir=drive_output_dir,
         max_concurrency=max_concurrency,
     )
-    return batch_df, batch_summary, batch_zip, None, None, ""
+    return batch_df, batch_summary, batch_zip, None, None
+
+
+def update_operation_visibility(operation_mode: str) -> tuple[dict[str, bool], dict[str, bool], dict[str, bool], dict[str, bool]]:
+    is_batch = operation_mode == OPERATION_BATCH
+    return (
+        gr.update(visible=is_batch),
+        gr.update(visible=not is_batch),
+        gr.update(visible=not is_batch),
+        gr.update(visible=is_batch),
+    )
 
 
 def build_ui() -> gr.Blocks:
@@ -509,57 +519,64 @@ def build_ui() -> gr.Blocks:
         )
 
         with gr.Row():
-            health_button = gr.Button("Check Kokoro Model", variant="secondary")
-            health_status = gr.Textbox(label="Model Health", lines=4)
+            health_button = gr.Button("Check Kokoro Model", variant="secondary", scale=1)
+            health_status = gr.Textbox(label="Model Health", lines=4, scale=2)
 
         with gr.Row():
             operation_mode = gr.Radio(
                 label="Operation Mode",
                 choices=[OPERATION_BATCH, OPERATION_TEST],
                 value=OPERATION_BATCH,
+                scale=1,
             )
-            csv_file = gr.File(label="CSV File (Batch Mode)", file_types=[".csv"], type="filepath")
-            test_name = gr.Textbox(label="Test Name (Custom Test)", value="Test User")
-            test_phone = gr.Textbox(label="Test No (Custom Test)", value="0000000000")
-
-        with gr.Row():
             storage_mode = gr.Radio(
                 label="Storage Mode",
                 choices=[STORAGE_DRIVE, STORAGE_MEMORY],
                 value=STORAGE_DRIVE,
+                scale=1,
             )
             output_dir = gr.Textbox(
                 label="Google Drive Output Folder",
                 value=DEFAULT_OUTPUT_DIR,
                 lines=1,
+                scale=2,
             )
 
-        template_text = gr.Textbox(
-            label="Message Template",
-            value=DEFAULT_TEMPLATE,
-            lines=4,
-        )
+        with gr.Group():
+            with gr.Row():
+                csv_file = gr.File(label="CSV File (Batch Mode)", file_types=[".csv"], type="filepath", scale=2)
+                test_name = gr.Textbox(label="Test Name (Custom Test)", value="Test User", scale=1)
+                test_phone = gr.Textbox(label="Test No (Custom Test)", value="0000000000", scale=1)
 
-        max_concurrency = gr.Slider(
-            label="Async Concurrency",
-            minimum=1,
-            maximum=16,
-            value=DEFAULT_MAX_CONCURRENCY,
-            step=1,
-        )
+            template_text = gr.Textbox(
+                label="Message Template",
+                value=DEFAULT_TEMPLATE,
+                lines=3,
+            )
+
+            max_concurrency = gr.Slider(
+                label="Async Concurrency (Batch Mode)",
+                minimum=1,
+                maximum=16,
+                value=DEFAULT_MAX_CONCURRENCY,
+                step=1,
+            )
 
         run_button = gr.Button("Generate Voice Notes", variant="primary")
-        csv_download_zip = gr.File(label="Batch Download ZIP (In-Memory Mode)")
 
-        result_table = gr.Dataframe(
-            label="Generation Results",
-            headers=["index", "name", "phone", "status", "message", "output_path"],
-            wrap=True,
-        )
-        summary_text = gr.Textbox(label="Run Summary", lines=5)
-        single_audio = gr.Audio(label="Custom Test Audio", type="numpy")
-        single_file = gr.File(label="Custom Test Download (No.wav)")
-        single_status = gr.Textbox(label="Custom Test Status", lines=3)
+        with gr.Group():
+            summary_text = gr.Textbox(label="Run / Test Summary", lines=5)
+            with gr.Row():
+                single_audio = gr.Audio(label="Custom Test Audio", type="numpy")
+                single_file = gr.File(label="Custom Test Download (No.wav)")
+
+        with gr.Accordion("Generation Results (Batch)", open=False):
+            result_table = gr.Dataframe(
+                label="Generation Results",
+                headers=["index", "name", "phone", "status", "message", "output_path"],
+                wrap=True,
+            )
+            csv_download_zip = gr.File(label="Batch Download ZIP (In-Memory Mode)")
 
         health_button.click(
             fn=check_model_health,
@@ -571,8 +588,15 @@ def build_ui() -> gr.Blocks:
         run_button.click(
             fn=generate_voice_notes,
             inputs=[operation_mode, csv_file, test_name, test_phone, template_text, storage_mode, output_dir, max_concurrency],
-            outputs=[result_table, summary_text, csv_download_zip, single_audio, single_file, single_status],
+            outputs=[result_table, summary_text, csv_download_zip, single_audio, single_file],
             api_name="generate_voice_notes",
+        )
+
+        operation_mode.change(
+            fn=update_operation_visibility,
+            inputs=[operation_mode],
+            outputs=[csv_file, test_name, test_phone, max_concurrency],
+            api_name="update_operation_visibility",
         )
 
     return demo
