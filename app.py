@@ -25,6 +25,30 @@ STORAGE_DRIVE = "Google Drive"
 STORAGE_MEMORY = "In-Memory Download"
 OPERATION_BATCH = "Batch (CSV)"
 OPERATION_TEST = "Custom Test (No CSV)"
+APP_CSS = """
+#csv-upload {
+    min-height: 76px !important;
+}
+
+#csv-upload [data-testid="file-upload-dropzone"] {
+    min-height: 76px !important;
+    padding-top: 8px !important;
+    padding-bottom: 8px !important;
+}
+
+#csv-upload [data-testid="file-upload-dropzone"] * {
+    white-space: nowrap !important;
+}
+
+#csv-upload [data-testid="file-upload-dropzone"] .wrap,
+#csv-upload [data-testid="file-upload-dropzone"] div {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 6px !important;
+}
+"""
 
 
 @dataclass
@@ -511,7 +535,7 @@ def update_operation_visibility(operation_mode: str) -> tuple[dict[str, bool], d
 
 
 def build_ui() -> gr.Blocks:
-    with gr.Blocks(title="Kokoro 82M Voice Notes") as demo:
+    with gr.Blocks(title="Kokoro 82M Voice Notes", css=APP_CSS) as demo:
         gr.Markdown("## Kokoro 82M Voice Notes Generator")
         gr.Markdown(
             "Use one flow for both modes: select Batch (CSV) or Custom Test (No CSV). "
@@ -548,7 +572,8 @@ def build_ui() -> gr.Blocks:
                     file_types=[".csv"],
                     type="filepath",
                     scale=2,
-                    height=110,
+                    height=76,
+                    elem_id="csv-upload",
                 )
                 test_name = gr.Textbox(label="Test Name (Custom Test)", value="Test User", scale=1)
                 test_phone = gr.Textbox(label="Test No (Custom Test)", value="0000000000", scale=1)
