@@ -19,6 +19,19 @@ REQUIRED_COLUMNS = ("Name", "No")
 DEFAULT_OUTPUT_DIR = "/content/drive/MyDrive/kokoro_voice_notes"
 DEFAULT_TEMPLATE = "Hello {{Name}}, this is your voice note."
 DEFAULT_VOICE = "af_heart"
+VOICE_OPTIONS = [
+    "af_heart",
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+]
 DEFAULT_LANG_CODE = "a"
 DEFAULT_MAX_CONCURRENCY = 4
 STORAGE_DRIVE = "Google Drive"
@@ -27,11 +40,11 @@ OPERATION_BATCH = "Batch (CSV)"
 OPERATION_TEST = "Custom Test (No CSV)"
 APP_CSS = """
 #csv-upload {
-    min-height: 76px !important;
+    min-height: 120px !important;
 }
 
 #csv-upload [data-testid="file-upload-dropzone"] {
-    min-height: 76px !important;
+    min-height: 120px !important;
     padding-top: 8px !important;
     padding-bottom: 8px !important;
 }
@@ -141,11 +154,12 @@ class KokoroVoiceGenerator:
         except Exception:
             return []
 
-    def synthesize_numpy(self, text: str) -> np.ndarray:
+    def synthesize_numpy(self, text: str, selected_voice: str | None = None) -> np.ndarray:
         self.ensure_pipeline()
         assert self._pipeline is not None
+        voice_to_use = (selected_voice or self.voice).strip() or self.voice
 
-        generated = self._pipeline(text, voice=self.voice)
+        generated = self._pipeline(text, voice=voice_to_use)
 
         segments: list[np.ndarray] = []
         for item in generated:
@@ -244,12 +258,13 @@ def validate_and_prepare_rows(df: pd.DataFrame, template: str) -> tuple[list[Row
 async def process_single_row(
     generator: KokoroVoiceGenerator,
     row_task: RowTask,
+    selected_voice: str,
     output_dir: Path,
     semaphore: asyncio.Semaphore,
 ) -> RowResult:
     async with semaphore:
         try:
-            audio = await asyncio.to_thread(generator.synthesize_numpy, row_task.text)
+            audio = await asyncio.to_thread(generator.synthesize_numpy, row_task.text, selected_voice)
             output_path = output_dir / f"{row_task.phone}.wav"
             await asyncio.to_thread(generator.save_wav, audio, output_path)
             return RowResult(
@@ -273,12 +288,13 @@ async def process_single_row(
 async def process_all_rows_async(
     generator: KokoroVoiceGenerator,
     row_tasks: list[RowTask],
+    selected_voice: str,
     output_dir: Path,
     max_concurrency: int,
 ) -> list[RowResult]:
     semaphore = asyncio.Semaphore(max(1, max_concurrency))
     coroutines = [
-        process_single_row(generator, task, output_dir, semaphore) for task in row_tasks
+        process_single_row(generator, task, selected_voice, output_dir, semaphore) for task in row_tasks
     ]
     results = await asyncio.gather(*coroutines)
     return results
@@ -287,11 +303,12 @@ async def process_all_rows_async(
 async def process_single_row_memory(
     generator: KokoroVoiceGenerator,
     row_task: RowTask,
+    selected_voice: str,
     semaphore: asyncio.Semaphore,
 ) -> tuple[RowResult, np.ndarray | None]:
     async with semaphore:
         try:
-            audio = await asyncio.to_thread(generator.synthesize_numpy, row_task.text)
+            audio = await asyncio.to_thread(generator.synthesize_numpy, row_task.text, selected_voice)
             result = RowResult(
                 index=row_task.index,
                 name=row_task.name,
@@ -315,11 +332,12 @@ async def process_single_row_memory(
 async def process_all_rows_async_memory(
     generator: KokoroVoiceGenerator,
     row_tasks: list[RowTask],
+    selected_voice: str,
     max_concurrency: int,
 ) -> list[tuple[RowResult, np.ndarray | None]]:
     semaphore = asyncio.Semaphore(max(1, max_concurrency))
     coroutines = [
-        process_single_row_memory(generator, task, semaphore) for task in row_tasks
+        process_single_row_memory(generator, task, selected_voice, semaphore) for task in row_tasks
     ]
     results = await asyncio.gather(*coroutines)
     return results
@@ -340,6 +358,7 @@ def run_async_job(coro: Any) -> Any:
 def generate_from_csv(
     csv_file_path: str,
     template_text: str,
+    selected_voice: str,
     storage_mode: str,
     drive_output_dir: str,
     max_concurrency: int,
@@ -362,6 +381,7 @@ def generate_from_csv(
             process_all_rows_async(
                 generator=generator,
                 row_tasks=row_tasks,
+                selected_voice=selected_voice,
                 output_dir=output_dir,
                 max_concurrency=max_concurrency,
             )
@@ -373,6 +393,7 @@ def generate_from_csv(
             process_all_rows_async_memory(
                 generator=generator,
                 row_tasks=row_tasks,
+                selected_voice=selected_voice,
                 max_concurrency=max_concurrency,
             )
         )
@@ -409,6 +430,7 @@ def generate_from_csv(
     summary = (
         f"{mount_msg}\n"
         f"Device: {preflight['device']} (CUDA available: {preflight['cuda_available']})\n"
+        f"Voice: {selected_voice}\n"
         f"Storage mode: {storage_mode}\n"
         f"Rows total: {len(df)} | Success: {success_count} | Failed: {failed_count} | Skipped: {skipped_count}\n"
         f"Output: {output_location}"
@@ -441,6 +463,7 @@ def generate_single_test(
     name: str,
     phone: str,
     template_text: str,
+    selected_voice: str,
     storage_mode: str,
     drive_output_dir: str,
 ) -> tuple[tuple[int, np.ndarray] | None, str | None, str]:
@@ -455,7 +478,7 @@ def generate_single_test(
     text = template_text.replace("{{Name}}", clean_name).replace("{{NAME}}", clean_name)
 
     try:
-        audio = generator.synthesize_numpy(text)
+        audio = generator.synthesize_numpy(text, selected_voice)
         if storage_mode == STORAGE_DRIVE:
             mount_msg = generator.mount_drive_if_colab()
             output_dir = Path(drive_output_dir).expanduser()
@@ -479,6 +502,7 @@ def generate_voice_notes(
     csv_file_path: str,
     test_name: str,
     test_phone: str,
+    selected_voice: str,
     template_text: str,
     storage_mode: str,
     drive_output_dir: str,
@@ -489,6 +513,7 @@ def generate_voice_notes(
             name=test_name,
             phone=test_phone,
             template_text=template_text,
+            selected_voice=selected_voice,
             storage_mode=storage_mode,
             drive_output_dir=drive_output_dir,
         )
@@ -509,6 +534,7 @@ def generate_voice_notes(
         )
         summary = (
             "Custom Test mode\n"
+            f"Voice: {selected_voice}\n"
             f"Storage mode: {storage_mode}\n"
             f"Status: {test_status}"
         )
@@ -517,6 +543,7 @@ def generate_voice_notes(
     batch_df, batch_summary, batch_zip = generate_from_csv(
         csv_file_path=csv_file_path,
         template_text=template_text,
+        selected_voice=selected_voice,
         storage_mode=storage_mode,
         drive_output_dir=drive_output_dir,
         max_concurrency=max_concurrency,
@@ -572,11 +599,18 @@ def build_ui() -> gr.Blocks:
                     file_types=[".csv"],
                     type="filepath",
                     scale=2,
-                    height=76,
+                    height=120,
                     elem_id="csv-upload",
                 )
                 test_name = gr.Textbox(label="Test Name (Custom Test)", value="Test User", scale=1)
                 test_phone = gr.Textbox(label="Test No (Custom Test)", value="0000000000", scale=1)
+
+            voice_selection = gr.Dropdown(
+                label="Voice Selection",
+                choices=VOICE_OPTIONS,
+                value=DEFAULT_VOICE,
+                allow_custom_value=True,
+            )
 
             template_text = gr.Textbox(
                 label="Message Template",
@@ -616,7 +650,7 @@ def build_ui() -> gr.Blocks:
 
         run_button.click(
             fn=generate_voice_notes,
-            inputs=[operation_mode, csv_file, test_name, test_phone, template_text, storage_mode, output_dir, max_concurrency],
+            inputs=[operation_mode, csv_file, test_name, test_phone, voice_selection, template_text, storage_mode, output_dir, max_concurrency],
             outputs=[result_table, summary_text, download_file, single_audio],
             api_name="generate_voice_notes",
         )
