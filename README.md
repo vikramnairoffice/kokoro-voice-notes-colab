@@ -1,6 +1,6 @@
 # Kokoro 82M Voice Notes (Colab T4)
 
-This tool generates personalized voice notes from a CSV using **Kokoro 82M** and saves `.wav` files to Google Drive.
+This tool generates personalized voice notes from CSV (or direct single-test input) using **Kokoro 82M**.
 
 ## Input format
 
@@ -19,9 +19,12 @@ Sara,9876543210
 ## Features
 
 - Uses `{{Name}}` tag in message template.
+- Includes a model health check button in UI to verify Kokoro is installed and generating audio.
 - Generates one WAV file per row.
 - Output filename is the exact value in `No` plus `.wav`.
-- Saves files to Google Drive folder path you provide.
+- Supports two storage modes:
+   - Google Drive output folder
+   - In-memory download (ZIP for batch, WAV for single test)
 - Async processing for faster batch generation.
 - Simple Gradio UI.
 
@@ -45,12 +48,15 @@ Gradio will print a local URL in Colab output.
 
 ## How to use
 
-1. Upload your CSV in the UI.
+1. Click **Check Kokoro Model** to confirm model is installed and working.
 2. Write message template with `{{Name}}`, for example:
    - `Hello {{Name}}, this is a reminder call from our team.`
-3. Set output folder (default: `/content/drive/MyDrive/kokoro_voice_notes`).
-4. Click **Generate Voice Notes**.
-5. Check run summary and per-row result table.
+3. Choose storage mode:
+   - **Google Drive** for direct saving to drive folder
+   - **In-Memory Download** for UI download files
+4. For batch run: upload CSV and click **Generate Voice Notes**.
+5. For no-CSV test: use **Single Test** fields and click **Generate Single Test Voice**.
+6. Check run summary and per-row result table.
 
 ## Notes
 

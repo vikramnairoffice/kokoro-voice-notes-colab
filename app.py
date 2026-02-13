@@ -1,5 +1,8 @@
 import asyncio
+import io
 import os
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -18,6 +21,8 @@ DEFAULT_TEMPLATE = "Hello {{Name}}, this is your voice note."
 DEFAULT_VOICE = "af_heart"
 DEFAULT_LANG_CODE = "a"
 DEFAULT_MAX_CONCURRENCY = 4
+STORAGE_DRIVE = "Google Drive"
+STORAGE_MEMORY = "In-Memory Download"
 
 
 @dataclass
@@ -108,6 +113,36 @@ class KokoroVoiceGenerator:
         sf.write(str(output_path), audio, self.sample_rate, subtype="PCM_16")
 
 
+_GENERATOR: KokoroVoiceGenerator | None = None
+
+
+def get_generator() -> KokoroVoiceGenerator:
+    global _GENERATOR
+    if _GENERATOR is None:
+        _GENERATOR = KokoroVoiceGenerator()
+    return _GENERATOR
+
+
+def create_zip_from_audio_pairs(
+    audio_pairs: list[tuple[RowResult, np.ndarray]],
+    sample_rate: int,
+) -> str | None:
+    if not audio_pairs:
+        return None
+
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    temp_zip_path = temp_zip.name
+    temp_zip.close()
+
+    with zipfile.ZipFile(temp_zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for row_result, audio in audio_pairs:
+            wav_bytes = io.BytesIO()
+            sf.write(wav_bytes, audio, sample_rate, format="WAV", subtype="PCM_16")
+            archive.writestr(f"{row_result.phone}.wav", wav_bytes.getvalue())
+
+    return temp_zip_path
+
+
 def validate_and_prepare_rows(df: pd.DataFrame, template: str) -> tuple[list[RowTask], list[RowResult]]:
     for col in REQUIRED_COLUMNS:
         if col not in df.columns:
@@ -193,6 +228,47 @@ async def process_all_rows_async(
     return results
 
 
+async def process_single_row_memory(
+    generator: KokoroVoiceGenerator,
+    row_task: RowTask,
+    semaphore: asyncio.Semaphore,
+) -> tuple[RowResult, np.ndarray | None]:
+    async with semaphore:
+        try:
+            audio = await asyncio.to_thread(generator.synthesize_numpy, row_task.text)
+            result = RowResult(
+                index=row_task.index,
+                name=row_task.name,
+                phone=row_task.phone,
+                status="success",
+                message="Generated",
+                output_path=f"{row_task.phone}.wav",
+            )
+            return result, audio
+        except Exception as exc:
+            result = RowResult(
+                index=row_task.index,
+                name=row_task.name,
+                phone=row_task.phone,
+                status="failed",
+                message=str(exc),
+            )
+            return result, None
+
+
+async def process_all_rows_async_memory(
+    generator: KokoroVoiceGenerator,
+    row_tasks: list[RowTask],
+    max_concurrency: int,
+) -> list[tuple[RowResult, np.ndarray | None]]:
+    semaphore = asyncio.Semaphore(max(1, max_concurrency))
+    coroutines = [
+        process_single_row_memory(generator, task, semaphore) for task in row_tasks
+    ]
+    results = await asyncio.gather(*coroutines)
+    return results
+
+
 def run_async_job(coro: Any) -> Any:
     try:
         loop = asyncio.get_running_loop()
@@ -208,32 +284,51 @@ def run_async_job(coro: Any) -> Any:
 def generate_from_csv(
     csv_file_path: str,
     template_text: str,
+    storage_mode: str,
     drive_output_dir: str,
     max_concurrency: int,
-) -> tuple[pd.DataFrame, str]:
+) -> tuple[pd.DataFrame, str, str | None]:
     if not csv_file_path:
         empty_df = pd.DataFrame(columns=["index", "name", "phone", "status", "message", "output_path"])
-        return empty_df, "Please upload a CSV file."
+        return empty_df, "Please upload a CSV file.", None
 
-    generator = KokoroVoiceGenerator()
+    generator = get_generator()
     preflight = generator.preflight()
-
-    mount_msg = generator.mount_drive_if_colab()
 
     df = pd.read_csv(csv_file_path, dtype={"Name": "string", "No": "string"})
     row_tasks, invalid_results = validate_and_prepare_rows(df, template_text)
 
-    output_dir = Path(drive_output_dir).expanduser()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    generated_results = run_async_job(
-        process_all_rows_async(
-            generator=generator,
-            row_tasks=row_tasks,
-            output_dir=output_dir,
-            max_concurrency=max_concurrency,
+    zip_download_path: str | None = None
+    if storage_mode == STORAGE_DRIVE:
+        mount_msg = generator.mount_drive_if_colab()
+        output_dir = Path(drive_output_dir).expanduser()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        generated_results = run_async_job(
+            process_all_rows_async(
+                generator=generator,
+                row_tasks=row_tasks,
+                output_dir=output_dir,
+                max_concurrency=max_concurrency,
+            )
         )
-    )
+        output_location = str(output_dir)
+    else:
+        mount_msg = "Google Drive not used (In-Memory Download mode)."
+        memory_results = run_async_job(
+            process_all_rows_async_memory(
+                generator=generator,
+                row_tasks=row_tasks,
+                max_concurrency=max_concurrency,
+            )
+        )
+        generated_results = [row_result for row_result, _ in memory_results]
+        success_audio_pairs = [
+            (row_result, audio)
+            for row_result, audio in memory_results
+            if row_result.status == "success" and audio is not None
+        ]
+        zip_download_path = create_zip_from_audio_pairs(success_audio_pairs, generator.sample_rate)
+        output_location = "Download ZIP from UI"
 
     all_results = invalid_results + generated_results
     all_results.sort(key=lambda item: item.index)
@@ -259,23 +354,91 @@ def generate_from_csv(
     summary = (
         f"{mount_msg}\n"
         f"Device: {preflight['device']} (CUDA available: {preflight['cuda_available']})\n"
+        f"Storage mode: {storage_mode}\n"
         f"Rows total: {len(df)} | Success: {success_count} | Failed: {failed_count} | Skipped: {skipped_count}\n"
-        f"Output directory: {output_dir}"
+        f"Output: {output_location}"
     )
 
-    return result_df, summary
+    return result_df, summary, zip_download_path
+
+
+def check_model_health() -> str:
+    generator = get_generator()
+    preflight = generator.preflight()
+    try:
+        test_audio = generator.synthesize_numpy("Hello, this is a Kokoro model health check.")
+        duration_seconds = round(float(test_audio.size) / float(generator.sample_rate), 2)
+        return (
+            "✅ Kokoro installed and working\n"
+            f"Device: {preflight['device']} (CUDA available: {preflight['cuda_available']})\n"
+            f"Torch: {preflight['torch_version']}\n"
+            f"Test audio generated: {duration_seconds}s"
+        )
+    except Exception as exc:
+        return (
+            "❌ Kokoro check failed\n"
+            f"Device: {preflight['device']} (CUDA available: {preflight['cuda_available']})\n"
+            f"Error: {exc}"
+        )
+
+
+def generate_single_test(
+    name: str,
+    phone: str,
+    template_text: str,
+    storage_mode: str,
+    drive_output_dir: str,
+) -> tuple[tuple[int, np.ndarray] | None, str | None, str]:
+    clean_name = (name or "").strip()
+    clean_phone = (phone or "").strip()
+    if not clean_name:
+        return None, None, "Please enter Name for single test generation."
+    if not clean_phone:
+        return None, None, "Please enter No for single test generation."
+
+    generator = get_generator()
+    text = template_text.replace("{{Name}}", clean_name).replace("{{NAME}}", clean_name)
+
+    try:
+        audio = generator.synthesize_numpy(text)
+        if storage_mode == STORAGE_DRIVE:
+            mount_msg = generator.mount_drive_if_colab()
+            output_dir = Path(drive_output_dir).expanduser()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"{clean_phone}.wav"
+            generator.save_wav(audio, output_path)
+            status = f"{mount_msg}\nSaved to: {output_path}"
+            return (generator.sample_rate, audio), str(output_path), status
+
+        temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        temp_wav_path = temp_wav.name
+        temp_wav.close()
+        generator.save_wav(audio, Path(temp_wav_path))
+        status = "Generated in memory mode. Download WAV from UI output."
+        return (generator.sample_rate, audio), temp_wav_path, status
+    except Exception as exc:
+        return None, None, f"Failed to generate single test audio: {exc}"
 
 
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="Kokoro 82M Voice Notes") as demo:
         gr.Markdown("## Kokoro 82M Voice Notes Generator")
         gr.Markdown(
-            "Upload a CSV with columns **Name** and **No**. Use `{{Name}}` in the message template. "
-            "WAV files are saved using phone number as filename."
+            "Upload a CSV with columns **Name** and **No** or run a direct single test without CSV. "
+            "Use `{{Name}}` in message template. Choose Google Drive storage or in-memory download mode."
         )
 
         with gr.Row():
+            health_button = gr.Button("Check Kokoro Model", variant="secondary")
+            health_status = gr.Textbox(label="Model Health", lines=4)
+
+        with gr.Row():
             csv_file = gr.File(label="CSV File", file_types=[".csv"], type="filepath")
+            storage_mode = gr.Radio(
+                label="Storage Mode",
+                choices=[STORAGE_DRIVE, STORAGE_MEMORY],
+                value=STORAGE_DRIVE,
+            )
             output_dir = gr.Textbox(
                 label="Google Drive Output Folder",
                 value=DEFAULT_OUTPUT_DIR,
@@ -297,6 +460,7 @@ def build_ui() -> gr.Blocks:
         )
 
         run_button = gr.Button("Generate Voice Notes", variant="primary")
+        csv_download_zip = gr.File(label="Batch Download ZIP (In-Memory Mode)")
 
         result_table = gr.Dataframe(
             label="Generation Results",
@@ -305,11 +469,34 @@ def build_ui() -> gr.Blocks:
         )
         summary_text = gr.Textbox(label="Run Summary", lines=5)
 
+        gr.Markdown("### Single Test (No CSV)")
+        with gr.Row():
+            single_name = gr.Textbox(label="Test Name", value="Test User")
+            single_phone = gr.Textbox(label="Test No", value="0000000000")
+        single_run_button = gr.Button("Generate Single Test Voice", variant="secondary")
+        single_audio = gr.Audio(label="Single Test Audio", type="numpy")
+        single_file = gr.File(label="Single Test Download")
+        single_status = gr.Textbox(label="Single Test Status", lines=4)
+
+        health_button.click(
+            fn=check_model_health,
+            inputs=[],
+            outputs=[health_status],
+            api_name="check_model_health",
+        )
+
         run_button.click(
             fn=generate_from_csv,
-            inputs=[csv_file, template_text, output_dir, max_concurrency],
-            outputs=[result_table, summary_text],
+            inputs=[csv_file, template_text, storage_mode, output_dir, max_concurrency],
+            outputs=[result_table, summary_text, csv_download_zip],
             api_name="generate_voice_notes",
+        )
+
+        single_run_button.click(
+            fn=generate_single_test,
+            inputs=[single_name, single_phone, template_text, storage_mode, output_dir],
+            outputs=[single_audio, single_file, single_status],
+            api_name="generate_single_test_voice",
         )
 
     return demo
